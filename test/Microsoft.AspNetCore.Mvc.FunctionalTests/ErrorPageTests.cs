@@ -6,7 +6,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Encodings.Web;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc.Razor.Internal;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Mvc.FunctionalTests
@@ -17,11 +16,11 @@ namespace Microsoft.AspNetCore.Mvc.FunctionalTests
     public class ErrorPageTests : IClassFixture<MvcTestFixture<ErrorPageMiddlewareWebSite.Startup>>
     {
         private static readonly string PreserveCompilationContextMessage = HtmlEncoder.Default.Encode(
-            "One or more compilation references are missing. Ensure that your project is referencing " +
-            "'Microsoft.NET.Sdk.Web' and the 'PreserveCompilationContext' property is not set to false.");
+            "One or more compilation references may be missing. " +
+            "If you're seeing this in a published application, set 'CopyRefAssembliesToPublishDirectory' to true in your project file to ensure files in the refs directory are published.");
         public ErrorPageTests(MvcTestFixture<ErrorPageMiddlewareWebSite.Startup> fixture)
         {
-            Client = fixture.Client;
+            Client = fixture.CreateDefaultClient();
         }
 
         public HttpClient Client { get; }
@@ -74,7 +73,7 @@ namespace Microsoft.AspNetCore.Mvc.FunctionalTests
             // Arrange
             var expectedMessage = "The type or namespace name &#x27;NamespaceDoesNotExist&#x27; could not be found ("
                 + "are you missing a using directive or an assembly reference?)";
-            var expectedCompilationContent = "public class _Views_ErrorFromViewImports_Index_cshtml : "
+            var expectedCompilationContent = "public class Views_ErrorFromViewImports_Index : "
                 + "global::Microsoft.AspNetCore.Mvc.Razor.RazorPage&lt;dynamic&gt;";
             var expectedMediaType = MediaTypeHeaderValue.Parse("text/html; charset=utf-8");
 

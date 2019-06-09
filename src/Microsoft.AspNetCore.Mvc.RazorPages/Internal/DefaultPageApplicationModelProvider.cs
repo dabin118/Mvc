@@ -16,6 +16,24 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
     public class DefaultPageApplicationModelProvider : IPageApplicationModelProvider
     {
         private const string ModelPropertyName = "Model";
+        private readonly PageHandlerPageFilter _pageHandlerPageFilter = new PageHandlerPageFilter();
+        private readonly PageHandlerResultFilter _pageHandlerResultFilter = new PageHandlerResultFilter();
+        private readonly IModelMetadataProvider _modelMetadataProvider;
+        private readonly MvcOptions _options;
+        private readonly Func<ActionContext, bool> _supportsAllRequests;
+        private readonly Func<ActionContext, bool> _supportsNonGetRequests;
+
+
+        public DefaultPageApplicationModelProvider(
+            IModelMetadataProvider modelMetadataProvider,
+            IOptions<MvcOptions> options)
+        {
+            _modelMetadataProvider = modelMetadataProvider;
+            _options = options.Value;
+
+            _supportsAllRequests = _ => true;
+            _supportsNonGetRequests = context => !string.Equals(context.HttpContext.Request.Method, "GET", StringComparison.OrdinalIgnoreCase);
+        }
 
         /// <inheritdoc />
         public int Order => -1000;
@@ -74,6 +92,7 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
             }
 
             var modelTypeInfo = modelProperty.PropertyType.GetTypeInfo();
+            var declaredModelType = modelTypeInfo;
 
             // Now we want figure out which type is the handler type.
             TypeInfo handlerType;
@@ -89,6 +108,7 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
             var handlerTypeAttributes = handlerType.GetCustomAttributes(inherit: true);
             var pageModel = new PageApplicationModel(
                 actionDescriptor,
+                declaredModelType,
                 handlerType,
                 handlerTypeAttributes)
             {
@@ -142,6 +162,18 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
                 {
                     pageModel.Filters.Add(filter);
                 }
+            }
+
+            if (typeof(IAsyncPageFilter).IsAssignableFrom(pageModel.HandlerType) ||
+                typeof(IPageFilter).IsAssignableFrom(pageModel.HandlerType))
+            {
+                pageModel.Filters.Add(_pageHandlerPageFilter);
+            }
+
+            if (typeof(IAsyncResultFilter).IsAssignableFrom(pageModel.HandlerType) ||
+                typeof(IResultFilter).IsAssignableFrom(pageModel.HandlerType))
+            {
+                pageModel.Filters.Add(_pageHandlerResultFilter);
             }
         }
 
@@ -202,9 +234,22 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
                 throw new ArgumentNullException(nameof(parameter));
             }
 
-            return new PageParameterModel(parameter, parameter.GetCustomAttributes(inherit: true))
+            var attributes = parameter.GetCustomAttributes(inherit: true);
+
+            BindingInfo bindingInfo;
+            if (_options.AllowValidatingTopLevelNodes && _modelMetadataProvider is ModelMetadataProvider modelMetadataProviderBase)
             {
-                BindingInfo = BindingInfo.GetBindingInfo(parameter.GetCustomAttributes()),
+                var modelMetadata = modelMetadataProviderBase.GetMetadataForParameter(parameter);
+                bindingInfo = BindingInfo.GetBindingInfo(attributes, modelMetadata);
+            }
+            else
+            {
+                bindingInfo = BindingInfo.GetBindingInfo(attributes);
+            }
+
+            return new PageParameterModel(parameter, attributes)
+            {
+                BindingInfo = bindingInfo,
                 ParameterName = parameter.Name,
             };
         }
@@ -221,10 +266,30 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
                 throw new ArgumentNullException(nameof(property));
             }
 
-            var attributes = property.GetCustomAttributes(inherit: true);
-            var bindingInfo = BindingInfo.GetBindingInfo(attributes);
+            var propertyAttributes = property.GetCustomAttributes(inherit: true);
 
-            var model = new PagePropertyModel(property, property.GetCustomAttributes(inherit: true))
+            // BindingInfo for properties can be either specified by decorating the property with binding-specific attributes.
+            // ModelMetadata also adds information from the property's type and any configured IBindingMetadataProvider.
+            var propertyMetadata = _modelMetadataProvider.GetMetadataForProperty(property.DeclaringType, property.Name);
+            var bindingInfo = BindingInfo.GetBindingInfo(propertyAttributes, propertyMetadata);
+
+            if (bindingInfo == null)
+            {
+                // Look for BindPropertiesAttribute on the handler type if no BindingInfo was inferred for the property.
+                // This allows a user to enable model binding on properties by decorating the controller type with BindPropertiesAttribute.
+                var declaringType = property.DeclaringType;
+                var bindPropertiesAttribute = declaringType.GetCustomAttribute<BindPropertiesAttribute>(inherit: true);
+                if (bindPropertiesAttribute != null)
+                {
+                    var requestPredicate = bindPropertiesAttribute.SupportsGet ? _supportsAllRequests : _supportsNonGetRequests;
+                    bindingInfo = new BindingInfo
+                    {
+                        RequestPredicate = requestPredicate,
+                    };
+                }
+            }
+
+            var model = new PagePropertyModel(property, propertyAttributes)
             {
                 PropertyName = property.Name,
                 BindingInfo = bindingInfo,
@@ -250,7 +315,7 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Internal
                 return false;
             }
 
-            // Overriden methods from Object class, e.g. Equals(Object), GetHashCode(), etc., are not valid.
+            // Overridden methods from Object class, e.g. Equals(Object), GetHashCode(), etc., are not valid.
             if (methodInfo.GetBaseDefinition().DeclaringType == typeof(object))
             {
                 return false;
